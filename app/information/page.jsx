@@ -1,0 +1,245 @@
+"use client";
+
+import { useState, useRef } from "react";
+import { useRouter } from "next/navigation";
+import useSWR from "swr";
+import { Input } from "@/components/ui/input";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  CardDescription,
+} from "@/components/ui/card";
+import Sidebar from "@/components/sidebar";
+import Header from "@/components/header";
+import { useAuth } from "@/contexts/AuthContext";
+import { AlertCircle, X, Building2, ChevronRight, Search } from "lucide-react";
+import { normalizeText } from "@/lib/utils";
+
+// ⚡ OPTIMIZED: Fetcher for SWR
+const fetcher = async (url) => {
+  const res = await fetch(url)
+  if (!res.ok) throw new Error('Failed to fetch')
+  return res.json()
+}
+
+// ⚡ OPTIMIZED: Aggressive SWR config for EXTRA SNAPPY experience
+const swrConfig = {
+  revalidateOnFocus: false,
+  revalidateOnReconnect: false,
+  revalidateOnMount: true,
+  dedupingInterval: 300000,      // 5 min - instant on repeat visits
+  focusThrottleInterval: 300000,
+  refreshInterval: 0,
+  shouldRetryOnError: false,
+  errorRetryCount: 0,
+  revalidateIfStale: false,
+}
+
+export default function RecordsManagementHome() {
+  const router = useRouter();
+  const {
+    user,
+    userRole,
+    currentIssuer,
+    availableIssuers,
+    issuerSpecificRole,
+    loading: authLoading,
+    initialized,
+  } = useAuth();
+
+  const [searchTerm, setSearchTerm] = useState("");
+  const [error, setError] = useState(null);
+
+  const isBroker = userRole === "broker";
+
+  // ⚡ OPTIMIZED: SWR fetches and caches issuers with 5-min cache
+  const { data: issuers = [], isLoading, error: fetchError, mutate } = useSWR(
+    initialized ? '/api/issuers' : null,
+    fetcher,
+    swrConfig
+  )
+
+  const filteredIssuers = issuers.filter((issuer) => {
+    const issuerName = issuer.issuer_name || issuer.name || "";
+    const matchesSearch = issuerName.toLowerCase().includes(searchTerm.toLowerCase());
+    return matchesSearch;
+  });
+
+  const handleIssuerClick = (issuerId) => {
+    router.push(`/information/${issuerId}`);
+  };
+
+  // ⚡ OPTIMIZED: Progressive loading - show UI structure immediately
+  if (!initialized) {
+    return (
+      <div className="flex h-screen bg-gradient-to-br from-orange-50 via-red-50 to-yellow-50">
+        {!isBroker && (
+          <Sidebar
+            userRole={userRole}
+            currentIssuerId={null}
+            issuerSpecificRole={issuerSpecificRole}
+          />
+        )}
+
+        <div className="flex-1 flex flex-col overflow-hidden">
+          <Header
+            user={user}
+            userRole={userRole}
+            currentIssuer={currentIssuer}
+            availableIssuers={availableIssuers}
+            issuerSpecificRole={issuerSpecificRole}
+          />
+
+          <main className="flex-1 overflow-y-auto p-5">
+            <div className="max-w-7xl mx-auto px-6">
+              <div className="mb-8">
+                <div className="h-10 w-96 bg-gray-200 animate-pulse rounded mb-2"></div>
+                <div className="h-6 w-full max-w-2xl bg-gray-200 animate-pulse rounded"></div>
+              </div>
+              <div className="h-10 w-96 bg-gray-200 animate-pulse rounded mb-6"></div>
+              <div className="flex flex-col gap-3">
+                {[1, 2, 3].map((i) => (
+                  <div key={i} className="h-24 bg-gray-200 animate-pulse rounded-lg"></div>
+                ))}
+              </div>
+            </div>
+          </main>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex h-screen bg-gradient-to-br from-orange-50 via-red-50 to-yellow-50">
+      {!isBroker && (
+        <Sidebar
+          userRole={userRole}
+          currentIssuerId={null}
+          issuerSpecificRole={issuerSpecificRole}
+        />
+      )}
+
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <Header
+          user={user}
+          userRole={userRole}
+          currentIssuer={currentIssuer}
+          availableIssuers={availableIssuers}
+          issuerSpecificRole={issuerSpecificRole}
+        />
+
+        <main className="flex-1 overflow-y-auto p-5">
+          <div className="max-w-7xl mx-auto px-6">
+            {/* Header */}
+            <div className="mb-8">
+              <h1 className="text-4xl font-bold text-gray-900 mb-2">
+                Records Management
+              </h1>
+              <p className="text-lg text-gray-600">
+                Select an issuer to view documents, securities administration, and transfer agent requests
+              </p>
+            </div>
+
+            {(error || fetchError) && (
+              <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg flex items-center gap-2 text-red-800">
+                <AlertCircle className="w-5 h-5" />
+                <span>{error}</span>
+                <button onClick={() => setError(null)} className="ml-auto">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            )}
+
+            {/* Search Bar */}
+            <div className="mb-6 relative">
+              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-5 w-5 text-gray-400" />
+              <Input
+                type="text"
+                placeholder="Search issuers..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="max-w-xl pl-10"
+              />
+            </div>
+
+            {/* ⚡ OPTIMIZED: Beautiful skeleton loading state */}
+            {isLoading ? (
+              <div className="flex flex-col gap-3">
+                {[1, 2, 3, 4, 5].map((i) => (
+                  <Card key={i} className="animate-pulse">
+                    <CardContent className="p-6">
+                      <div className="flex items-center gap-4">
+                        <div className="w-14 h-14 bg-gray-200 rounded-lg"></div>
+                        <div className="flex-1 space-y-3">
+                          <div className="h-6 bg-gray-200 rounded w-48"></div>
+                          <div className="h-4 bg-gray-200 rounded w-96"></div>
+                        </div>
+                        <div className="w-6 h-6 bg-gray-200 rounded"></div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            ) : (
+              <div>
+                {filteredIssuers.length === 0 ? (
+                  <Card>
+                    <CardContent className="p-6 text-center text-gray-600">
+                      {searchTerm
+                        ? "No issuers found matching your search"
+                        : "No issuers available"}
+                    </CardContent>
+                  </Card>
+                ) : (
+                  <div className="flex flex-col gap-3">
+                    {filteredIssuers.map((issuer) => (
+                      <Card
+                        key={issuer.id}
+                        className="cursor-pointer hover:shadow-lg transition-all duration-200 hover:border-orange-300 group"
+                        onClick={() => handleIssuerClick(issuer.id)}
+                      >
+                        <CardContent className="p-6">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-4 flex-1">
+                              <div className="w-14 h-14 bg-gradient-to-br from-orange-400 to-red-400 rounded-lg flex items-center justify-center flex-shrink-0">
+                                <Building2 className="w-7 h-7 text-white" />
+                              </div>
+                              <div className="flex-1">
+                                <h3 className="text-xl font-semibold text-gray-900 group-hover:text-orange-600 transition-colors mb-1">
+                                  {normalizeText(issuer.issuer_name || issuer.name) || "Unknown Issuer"}
+                                </h3>
+                                <div className="flex items-center gap-4 text-sm text-gray-600">
+                                  {issuer.ticker && (
+                                    <span className="font-mono font-medium text-gray-700">{issuer.ticker}</span>
+                                  )}
+                                  {issuer.incorporation_state && (
+                                    <span>
+                                      <span className="font-medium">State:</span> {issuer.incorporation_state}
+                                    </span>
+                                  )}
+                                  {issuer.authorized_shares && (
+                                    <span>
+                                      <span className="font-medium">Authorized Shares:</span>{" "}
+                                      {issuer.authorized_shares.toLocaleString()}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                            <ChevronRight className="w-6 h-6 text-gray-400 group-hover:text-orange-600 transition-colors flex-shrink-0" />
+                          </div>
+                        </CardContent>
+                      </Card>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </main>
+      </div>
+    </div>
+  );
+}

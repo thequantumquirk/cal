@@ -1,0 +1,732 @@
+"use client";
+
+import { useState, memo, useMemo, useCallback } from "react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import {
+  Edit,
+  Trash2,
+  Plus,
+  Search,
+  ArrowUpDown,
+  Users,
+  Hash,
+  Calendar,
+  BarChart3,
+  AlertTriangle,
+  Eye,
+  Building,
+  Shield,
+} from "lucide-react";
+import ShareholderModal from "./shareholder-modal";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { createClient } from "@/lib/supabase/client";
+import { useRouter } from "next/navigation";
+
+function ShareholdersTable({
+  shareholders,
+  userRole,
+  issuerId,
+  securities = [],
+}) {
+  const [searchTerm, setSearchTerm] = useState("");
+  const [sortField, setSortField] = useState("first_name");
+  const [sortDirection, setSortDirection] = useState("asc");
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [selectedShareholder, setSelectedShareholder] = useState(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [shareholderToDelete, setShareholderToDelete] = useState(null);
+  const [errorDialogOpen, setErrorDialogOpen] = useState(false);
+  const [errorMessage, setErrorMessage] = useState("");
+  const [viewDetailsOpen, setViewDetailsOpen] = useState(false);
+  const [selectedShareholderForView, setSelectedShareholderForView] =
+    useState(null);
+  const itemsPerPage = 10;
+  const router = useRouter();
+
+  // Helper function to format shareholder name
+  const getShareholderName = (shareholder) => {
+    // For entities (broker/dealer, corporation) or when first_name is empty,
+    // just use last_name which contains the full entity name
+    if (!shareholder.first_name || shareholder.first_name.trim() === "") {
+      return shareholder.last_name || shareholder.name || "-";
+    }
+    // For individuals, combine first and last name
+    return `${shareholder.first_name} ${shareholder.last_name || ""}`.trim();
+  };
+
+  // Helper function to get security names from security IDs
+  const getSecurityNames = (securityIds) => {
+    if (!securityIds || securityIds.length === 0) return "-";
+    const names = securityIds
+      .map((id) => {
+        const security = securities.find((s) => s.id === id);
+        return security ? security.class_name : null;
+      })
+      .filter(Boolean);
+    return names.length > 0 ? names.join(", ") : "-";
+  };
+
+  // NEW: Expand shareholders into individual position rows
+  const expandShareholdersToPositions = useMemo(() => {
+    const positions = [];
+
+    shareholders.forEach((shareholder) => {
+      // If shareholder has no securities, still show them with a single row
+      if (!shareholder.security_ids || shareholder.security_ids.length === 0) {
+        positions.push({
+          ...shareholder,
+          position_security_id: null,
+          position_security_name: "-",
+          position_shares: 0,
+          is_first_row: true,
+          rowspan: 1,
+        });
+      } else {
+        // Create a row for each security they own
+        shareholder.security_ids.forEach((securityId, index) => {
+          const security = securities.find((s) => s.id === securityId);
+
+          // Get shares for this specific security from positionMap (we'll need to pass this)
+          // For now, we'll calculate it based on total shares divided by securities
+          // TODO: This needs actual per-security share counts
+          const positionShares = shareholder.position_shares?.[securityId] || 0;
+
+          positions.push({
+            ...shareholder,
+            position_security_id: securityId,
+            position_security_name: security ? security.class_name : "-",
+            position_shares: positionShares,
+            is_first_row: index === 0,
+            rowspan: shareholder.security_ids.length,
+          });
+        });
+      }
+    });
+
+    return positions;
+  }, [shareholders, securities]);
+
+  // Filter position rows based on search term
+  const filteredPositions = expandShareholdersToPositions.filter((position) => {
+    const fullName = getShareholderName(position).toLowerCase();
+
+    return (
+      fullName.includes(searchTerm.toLowerCase()) ||
+      (position.account_number || "")
+        .toLowerCase()
+        .includes(searchTerm.toLowerCase()) ||
+      (position.holder_type || "")
+        .toLowerCase()
+        .includes(searchTerm.toLowerCase()) ||
+      (position.position_security_name || "")
+        .toLowerCase()
+        .includes(searchTerm.toLowerCase())
+    );
+  });
+
+  // Sort position rows
+  const sortedPositions = [...filteredPositions].sort((a, b) => {
+    let aValue, bValue;
+
+    if (sortField === "name") {
+      // Handle name sorting specially using helper function
+      aValue = getShareholderName(a);
+      bValue = getShareholderName(b);
+    } else if (sortField === "security") {
+      aValue = a.position_security_name || "";
+      bValue = b.position_security_name || "";
+    } else if (sortField === "shares") {
+      aValue = a.position_shares || 0;
+      bValue = b.position_shares || 0;
+    } else if (sortField === "ownership_percentage") {
+      // Handle ownership percentage sorting with calculated values
+      aValue = parseFloat(
+        a.calculated_ownership_percentage || a.ownership_percentage || 0,
+      );
+      bValue = parseFloat(
+        b.calculated_ownership_percentage || b.ownership_percentage || 0,
+      );
+    } else {
+      aValue = a[sortField];
+      bValue = b[sortField];
+    }
+
+    if (sortDirection === "asc") {
+      return aValue < bValue ? -1 : aValue > bValue ? 1 : 0;
+    } else {
+      return aValue > bValue ? -1 : aValue < bValue ? 1 : 0;
+    }
+  });
+
+  // Paginate position rows
+  const totalPages = Math.ceil(sortedPositions.length / itemsPerPage);
+  const startIndex = (currentPage - 1) * itemsPerPage;
+  const paginatedPositions = sortedPositions.slice(
+    startIndex,
+    startIndex + itemsPerPage,
+  );
+
+  const handleSort = (field) => {
+    if (sortField === field) {
+      setSortDirection(sortDirection === "asc" ? "desc" : "asc");
+    } else {
+      setSortField(field);
+      setSortDirection("asc");
+    }
+  };
+
+  const handleEdit = (shareholder) => {
+    setSelectedShareholder(shareholder);
+    setIsModalOpen(true);
+  };
+
+  const handleAdd = () => {
+    setSelectedShareholder(null);
+    setIsModalOpen(true);
+  };
+
+  const handleViewDetails = (shareholder) => {
+    setSelectedShareholderForView(shareholder);
+    setViewDetailsOpen(true);
+  };
+
+  const handleDeleteClick = (shareholder) => {
+    setShareholderToDelete(shareholder);
+    setDeleteDialogOpen(true);
+  };
+
+  const handleDelete = async () => {
+    if (!shareholderToDelete) return;
+
+    const supabase = createClient();
+
+    try {
+      const { error } = await supabase
+        .from("shareholders_new")
+        .delete()
+        .eq("id", shareholderToDelete.id);
+
+      if (error) throw error;
+
+      router.refresh();
+      setDeleteDialogOpen(false);
+      setShareholderToDelete(null);
+    } catch (error) {
+      console.error("Error deleting shareholder:", error);
+      setErrorMessage("Error deleting shareholder: " + error.message);
+      setErrorDialogOpen(true);
+    }
+  };
+
+  const canEdit = userRole === "admin" || userRole === "transfer_team";
+  const canDelete = userRole === "admin";
+  const canCreate = userRole === "admin";
+
+  return (
+    <div className="space-y-6">
+      {/* Search and Add Button */}
+      <div className="flex justify-between items-center">
+        <div className="relative w-96">
+          <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-4 w-4" />
+          <Input
+            placeholder="Search by name, account number, or holder type..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="pl-10 bg-white/50 backdrop-blur-sm border border-white/20 focus:border-orange-500 focus:ring-orange-500/20"
+          />
+        </div>
+        {canCreate && (
+          <Button
+            onClick={handleAdd}
+            className="bg-gradient-to-r from-orange-500 to-red-500 hover:from-orange-600 hover:to-red-600 text-white"
+          >
+            <Plus className="h-4 w-4 mr-2" />
+            Add Shareholder
+          </Button>
+        )}
+      </div>
+
+      {/* Table */}
+      <div className="card-glass overflow-hidden">
+        <div className="overflow-x-auto table-scrollbar">
+          <Table>
+            <TableHeader>
+              <TableRow className="bg-white/30">
+                <TableHead
+                  className="cursor-pointer hover:bg-white/50 transition-colors font-semibold text-gray-900"
+                  onClick={() => handleSort("name")}
+                >
+                  <div className="flex items-center space-x-2">
+                    <span>Name</span>
+                  </div>
+                </TableHead>
+                <TableHead className="font-semibold text-gray-900">
+                  Account
+                </TableHead>
+                <TableHead className="font-semibold text-gray-900">
+                  Holder Type
+                </TableHead>
+                <TableHead
+                  className="cursor-pointer hover:bg-white/50 transition-colors font-semibold text-gray-900"
+                  onClick={() => handleSort("security")}
+                >
+                  <div className="flex items-center space-x-2">
+                    <span>Security</span>
+                  </div>
+                </TableHead>
+                <TableHead
+                  className="cursor-pointer hover:bg-white/50 transition-colors font-semibold text-gray-900 text-right"
+                  onClick={() => handleSort("shares")}
+                >
+                  <div className="flex items-center justify-end space-x-2">
+                    <span>Shares</span>
+                  </div>
+                </TableHead>
+                <TableHead className="font-semibold text-gray-900 text-right">
+                  Total Shares
+                </TableHead>
+                <TableHead
+                  className="cursor-pointer hover:bg-white/50 transition-colors font-semibold text-gray-900"
+                  onClick={() => handleSort("ownership_percentage")}
+                >
+                  <div className="flex items-center space-x-2">
+                    <span>Ownership %</span>
+                  </div>
+                </TableHead>
+                <TableHead className="font-semibold text-gray-900">
+                  Actions
+                </TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {paginatedPositions.map((position, index) => {
+                // Check if this is the start of a new shareholder group
+                const prevPosition = index > 0 ? paginatedPositions[index - 1] : null;
+                const isNewGroup = !prevPosition || prevPosition.id !== position.id;
+                const isLastInGroup = index === paginatedPositions.length - 1 ||
+                  (paginatedPositions[index + 1] && paginatedPositions[index + 1].id !== position.id);
+
+                return (
+                  <TableRow
+                    key={`${position.id}-${position.position_security_id || 'no-sec'}`}
+                    className={`hover:bg-gray-50 transition-colors ${
+                      isNewGroup ? 'border-t-2 border-gray-400' : ''
+                    } ${isLastInGroup ? 'border-b-2 border-gray-300' : ''}`}
+                  >
+                    {/* Name - show dimmed for non-first rows */}
+                    <TableCell className={position.is_first_row ? "font-semibold text-gray-900" : "text-gray-400 text-sm"}>
+                      {position.is_first_row ? getShareholderName(position) : '↳'}
+                    </TableCell>
+
+                    {/* Account */}
+                    <TableCell className={position.is_first_row ? "text-gray-900" : "text-gray-400 text-sm"}>
+                      {position.is_first_row ? (position.account_number || "-") : ''}
+                    </TableCell>
+
+                    {/* Holder Type */}
+                    <TableCell className={position.is_first_row ? "text-gray-900" : "text-gray-400 text-sm"}>
+                      {position.is_first_row ? (position.holder_type || "-") : ''}
+                    </TableCell>
+
+                    {/* Security - show for each position */}
+                    <TableCell className="text-gray-900">
+                      <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+                        {position.position_security_name}
+                      </span>
+                    </TableCell>
+
+                    {/* Shares for this security */}
+                    <TableCell className="font-medium text-gray-900 text-right">
+                      {position.position_shares?.toLocaleString() || "0"}
+                    </TableCell>
+
+                    {/* Total Shares - show for every row */}
+                    <TableCell className={`text-right ${position.is_first_row ? 'font-bold text-gray-900' : 'text-gray-500'}`}>
+                      {position.is_first_row ? position.current_shares?.toLocaleString() || "0" : ''}
+                    </TableCell>
+
+                    {/* Ownership % - show for every row */}
+                    <TableCell className={position.is_first_row ? 'font-bold text-gray-900' : 'text-gray-500'}>
+                      {position.is_first_row ? (
+                        position.calculated_ownership_percentage
+                          ? `${position.calculated_ownership_percentage}%`
+                          : position.ownership_percentage
+                            ? `${position.ownership_percentage}%`
+                            : "0.00%"
+                      ) : ''}
+                    </TableCell>
+
+                    {/* Actions - show for every row */}
+                    <TableCell>
+                      {position.is_first_row && (
+                        <div className="flex space-x-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => router.push(`/issuer/${issuerId}/shareholder/${position.id}`)}
+                            className="border-blue-200 bg-blue-50 hover:bg-blue-100 text-blue-600 hover:text-blue-700"
+                          >
+                            <Eye className="h-4 w-4" />
+                          </Button>
+
+                          {canEdit && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => handleEdit(position)}
+                              className="border-white/20 bg-white/50 hover:bg-white/70"
+                            >
+                              <Edit className="h-4 w-4" />
+                            </Button>
+                          )}
+                          {canDelete && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => handleDeleteClick(position)}
+                              className="border-red-200 bg-red-50 hover:bg-red-100 text-red-600 hover:text-red-700"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          )}
+                        </div>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+        </div>
+      </div>
+
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div className="flex justify-between items-center">
+          <div className="text-sm text-gray-700">
+            Showing {startIndex + 1} to{" "}
+            {Math.min(startIndex + itemsPerPage, sortedPositions.length)} of{" "}
+            {sortedPositions.length} positions
+          </div>
+          <div className="flex space-x-2">
+            <Button
+              variant="outline"
+              onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
+              disabled={currentPage === 1}
+              className="border-white/20 bg-white/50 hover:bg-white/70"
+            >
+              Previous
+            </Button>
+            <span className="flex items-center px-3 py-2 text-sm text-gray-700">
+              Page {currentPage} of {totalPages}
+            </span>
+            <Button
+              variant="outline"
+              onClick={() =>
+                setCurrentPage(Math.min(totalPages, currentPage + 1))
+              }
+              disabled={currentPage === totalPages}
+              className="border-white/20 bg-white/50 hover:bg-white/70"
+            >
+              Next
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* Modal */}
+      <ShareholderModal
+        isOpen={isModalOpen}
+        onClose={() => setIsModalOpen(false)}
+        shareholder={selectedShareholder}
+        userRole={userRole}
+        issuerId={issuerId}
+      />
+
+      {/* View Details Modal */}
+      <Dialog open={viewDetailsOpen} onOpenChange={setViewDetailsOpen}>
+        <DialogContent className="sm:max-w-[800px] max-h-[90vh] overflow-y-auto bg-white/95 backdrop-blur-xl border border-white/20 shadow-2xl">
+          <DialogHeader className="space-y-4">
+            <div className="flex items-center space-x-3">
+              <div className="w-10 h-10 bg-gradient-to-r from-blue-500 to-purple-500 rounded-xl flex items-center justify-center">
+                <Users className="h-5 w-5 text-white" />
+              </div>
+              <div>
+                <DialogTitle className="text-xl font-bold text-gray-900">
+                  Shareholder Details
+                </DialogTitle>
+                <p className="text-sm text-gray-600">
+                  View detailed information for{" "}
+                  {selectedShareholderForView?.name}
+                </p>
+              </div>
+            </div>
+          </DialogHeader>
+
+          {selectedShareholderForView && (
+            <div className="space-y-6">
+              {/* Basic Information */}
+              <div className="space-y-4">
+                <h3 className="text-lg font-semibold text-gray-900 flex items-center">
+                  <Users className="h-5 w-5 mr-2 text-blue-500" />
+                  Basic Information
+                </h3>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <Label className="text-sm font-medium text-gray-700">
+                      Name
+                    </Label>
+                    <p className="text-gray-900 font-medium">
+                      {selectedShareholderForView.first_name &&
+                        `${selectedShareholderForView.first_name} `}
+                      {selectedShareholderForView.last_name &&
+                        ` ${selectedShareholderForView.last_name}`}
+                    </p>
+                  </div>
+                  <div>
+                    <Label className="text-sm font-medium text-gray-700">
+                      Account Number
+                    </Label>
+                    <p className="text-gray-900">
+                      {selectedShareholderForView.account_number || "-"}
+                    </p>
+                  </div>
+                  <div>
+                    <Label className="text-sm font-medium text-gray-700">
+                      Taxpayer ID
+                    </Label>
+                    <p className="text-gray-900">
+                      {selectedShareholderForView.taxpayer_id ||
+                        selectedShareholderForView.tax_id ||
+                        "-"}
+                    </p>
+                  </div>
+                  <div>
+                    <Label className="text-sm font-medium text-gray-700">
+                      Ownership Percentage
+                    </Label>
+                    <p className="text-gray-900 font-semibold">
+                      {selectedShareholderForView.calculated_ownership_percentage
+                        ? `${selectedShareholderForView.calculated_ownership_percentage}%`
+                        : selectedShareholderForView.ownership_percentage
+                          ? `${selectedShareholderForView.ownership_percentage}%`
+                          : "0.00%"}
+                    </p>
+                  </div>
+                  <div>
+                    <Label className="text-sm font-medium text-gray-700">
+                      Current Shares
+                    </Label>
+                    <p className="text-gray-900 font-semibold">
+                      {selectedShareholderForView.current_shares
+                        ? selectedShareholderForView.current_shares.toLocaleString()
+                        : "0"}
+                    </p>
+                  </div>
+                </div>
+
+                <div>
+                  <Label className="text-sm font-medium text-gray-700">
+                    Address
+                  </Label>
+                  <p className="text-gray-900">
+                    {selectedShareholderForView.address
+                      ? `${selectedShareholderForView.address}, ${selectedShareholderForView.city || ""}, ${selectedShareholderForView.state || ""} ${selectedShareholderForView.ZIP || ""}, ${selectedShareholderForView.country || ""}`
+                          .replace(/,\s*,/g, ",")
+                          .replace(/,\s*$/, "")
+                      : "-"}
+                  </p>
+                </div>
+              </div>
+
+              {/* Additional Information */}
+              <div className="space-y-4">
+                <h3 className="text-lg font-semibold text-gray-900 flex items-center">
+                  <Shield className="h-5 w-5 mr-2 text-green-500" />
+                  Additional Information
+                </h3>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <Label className="text-sm font-medium text-gray-700">
+                      LEI
+                    </Label>
+                    <p className="text-gray-900">
+                      {selectedShareholderForView.lei || "-"}
+                    </p>
+                  </div>
+                  <div>
+                    <Label className="text-sm font-medium text-gray-700">
+                      Holder Type
+                    </Label>
+                    <p className="text-gray-900">
+                      {selectedShareholderForView.holder_type || "-"}
+                    </p>
+                  </div>
+                  <div>
+                    <Label className="text-sm font-medium text-gray-700">
+                      TIN Status
+                    </Label>
+                    <p className="text-gray-900">
+                      {selectedShareholderForView.tin_status || "-"}
+                    </p>
+                  </div>
+                  <div>
+                    <Label className="text-sm font-medium text-gray-700">
+                      OFAC Results
+                    </Label>
+                    <p className="text-gray-900">
+                      {selectedShareholderForView.ofac_results || "-"}
+                    </p>
+                  </div>
+                  <div>
+                    <Label className="text-sm font-medium text-gray-700">
+                      OFAC Date
+                    </Label>
+                    <p className="text-gray-900">
+                      {selectedShareholderForView.ofac_date
+                        ? new Date(
+                            selectedShareholderForView.ofac_date,
+                          ).toLocaleDateString()
+                        : "-"}
+                    </p>
+                  </div>
+                  <div>
+                    <Label className="text-sm font-medium text-gray-700">
+                      Date of Birth
+                    </Label>
+                    <p className="text-gray-900">
+                      {selectedShareholderForView.dob
+                        ? new Date(
+                            selectedShareholderForView.dob,
+                          ).toLocaleDateString()
+                        : "-"}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Contact Information */}
+              <div className="space-y-4">
+                <h3 className="text-lg font-semibold text-gray-900 flex items-center">
+                  <Users className="h-5 w-5 mr-2 text-orange-500" />
+                  Contact Information
+                </h3>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <Label className="text-sm font-medium text-gray-700">
+                      Email
+                    </Label>
+                    <p className="text-gray-900">
+                      {selectedShareholderForView.email || "Not provided"}
+                    </p>
+                  </div>
+                  <div>
+                    <Label className="text-sm font-medium text-gray-700">
+                      Phone
+                    </Label>
+                    <p className="text-gray-900">
+                      {selectedShareholderForView.phone || "Not provided"}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Confirmation Dialog */}
+      <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <AlertDialogContent className="bg-white/95 backdrop-blur-xl border border-white/20 shadow-2xl">
+          <AlertDialogHeader>
+            <div className="flex items-center space-x-3">
+              <div className="w-10 h-10 bg-gradient-to-r from-red-500 to-orange-500 rounded-xl flex items-center justify-center">
+                <AlertTriangle className="h-5 w-5 text-white" />
+              </div>
+              <div>
+                <AlertDialogTitle className="text-xl font-bold text-gray-900">
+                  Delete Shareholder
+                </AlertDialogTitle>
+                <AlertDialogDescription className="text-gray-600">
+                  Are you sure you want to delete this shareholder? This action
+                  cannot be undone.
+                </AlertDialogDescription>
+              </div>
+            </div>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="pt-4 flex-col sm:flex-row gap-2">
+            <AlertDialogCancel className="border-white/30 bg-white/60 hover:bg-white/80 text-gray-700 hover:text-gray-900 w-full sm:w-auto">
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDelete}
+              className="bg-gradient-to-r from-red-500 to-orange-500 hover:from-red-600 hover:to-orange-600 text-white w-full sm:w-auto"
+            >
+              Delete Shareholder
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Error Dialog */}
+      <AlertDialog open={errorDialogOpen} onOpenChange={setErrorDialogOpen}>
+        <AlertDialogContent className="bg-white/95 backdrop-blur-xl border border-white/20 shadow-2xl">
+          <AlertDialogHeader>
+            <div className="flex items-center space-x-3">
+              <div className="w-10 h-10 bg-gradient-to-r from-red-500 to-orange-500 rounded-xl flex items-center justify-center">
+                <AlertTriangle className="h-5 w-5 text-white" />
+              </div>
+              <div>
+                <AlertDialogTitle className="text-xl font-bold text-gray-900">
+                  Error
+                </AlertDialogTitle>
+                <AlertDialogDescription className="text-gray-600">
+                  {errorMessage}
+                </AlertDialogDescription>
+              </div>
+            </div>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="pt-4">
+            <AlertDialogAction
+              onClick={() => setErrorDialogOpen(false)}
+              className="bg-gradient-to-r from-orange-500 to-red-500 hover:from-orange-600 hover:to-red-600 text-white"
+            >
+              OK
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  );
+}
+
+export default memo(ShareholdersTable);

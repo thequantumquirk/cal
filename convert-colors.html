@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>OKLCH to RGB/Hex Converter</title>
+  <script src="https://unpkg.com/culori@3.1.2/bundled/culori.min.js"></script>
+</head>
+<body>
+  <h1>Color Conversion Results</h1>
+  <div id="results"></div>
+
+  <script>
+    const { oklch, formatHex, formatRgb } = culori;
+
+    // Light mode background
+    const lightBg = oklch(0.9689, 0.0025, 228.7841);
+
+    // Dark mode background
+    const darkBg = oklch(0.4115, 0.0246, 250.6938);
+
+    // Card backgrounds
+    const lightCard = { mode: 'oklch', l: 1.0000, c: 0, h: 0 }; // pure white
+    const darkCard = oklch(0.3660, 0.0204, 245.5579);
+
+    const results = `
+      <h2>Light Mode Background</h2>
+      <div style="background: ${formatHex(lightBg)}; padding: 20px; margin: 10px 0;">
+        <strong>Hex:</strong> ${formatHex(lightBg)}<br>
+        <strong>RGB:</strong> ${formatRgb(lightBg)}<br>
+        <strong>OKLCH:</strong> oklch(0.9689 0.0025 228.7841)
+      </div>
+
+      <h2>Dark Mode Background</h2>
+      <div style="background: ${formatHex(darkBg)}; padding: 20px; margin: 10px 0; color: white;">
+        <strong>Hex:</strong> ${formatHex(darkBg)}<br>
+        <strong>RGB:</strong> ${formatRgb(darkBg)}<br>
+        <strong>OKLCH:</strong> oklch(0.4115 0.0246 250.6938)
+      </div>
+
+      <h2>Light Mode Card Background</h2>
+      <div style="background: ${formatHex(lightCard)}; padding: 20px; margin: 10px 0; border: 1px solid #ccc;">
+        <strong>Hex:</strong> ${formatHex(lightCard)}<br>
+        <strong>RGB:</strong> ${formatRgb(lightCard)}<br>
+        <strong>OKLCH:</strong> oklch(1.0000 0 0) - Pure White
+      </div>
+
+      <h2>Dark Mode Card Background</h2>
+      <div style="background: ${formatHex(darkCard)}; padding: 20px; margin: 10px 0; color: white;">
+        <strong>Hex:</strong> ${formatHex(darkCard)}<br>
+        <strong>RGB:</strong> ${formatRgb(darkCard)}<br>
+        <strong>OKLCH:</strong> oklch(0.3660 0.0204 245.5579)
+      </div>
+    `;
+
+    document.getElementById('results').innerHTML = results;
+
+    // Log to console as well
+    console.log('Light BG:', formatHex(lightBg), formatRgb(lightBg));
+    console.log('Dark BG:', formatHex(darkBg), formatRgb(darkBg));
+    console.log('Light Card:', formatHex(lightCard), formatRgb(lightCard));
+    console.log('Dark Card:', formatHex(darkCard), formatRgb(darkCard));
+  </script>
+</body>
+</html>
